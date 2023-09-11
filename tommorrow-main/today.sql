@@ -1,0 +1,292 @@
+select * from lrc_specialization
+select * from lrc_doctor
+Select * from lrc_sch
+select * from appointmentsSlotCalendar where slotdoctorid=2
+select * from doctrange;
+insert into doctrange values(3,10);
+create table doctrange(
+doctorid int primary key ,
+	dayrange int
+)
+
+insert into doctrange values (1,10),(2,30),(4,14),(5,10),(6,45),(7,10),(8,20),(9,10),(10,20)
+
+
+					delete from lrc_sch;
+	INSERT INTO lrc_sch(doctorid, doctorslotindex, doctorschedule, doctoravailablefrom, doctoravailableto, doctoravailableslot) VALUES
+    (1, 1, 'x1x3x5x', '09:00', '12:00', 15),
+    (1, 2, 'xx2x4x6', '14:00', '17:00', 30),
+    (2, 1, 'x1x3x5x', '10:00', '13:00', 15),
+    (2, 2, 'xx2x4x6', '15:00', '18:00', 30),
+	(3, 1, 'x1xx4x6', '08:00', '11:00', 15),
+	(3, 2, 'x123xxx', '09:00', '12:00', 15),
+	(4, 1, 'x1x3x5x', '09:00', '12:00', 14),
+	(4, 2, 'xx2x4x6', '09:00', '12:00', 10),
+	(5, 1, 'xx23x5x', '09:00', '12:00', 10),
+	(5, 2, 'xxx34x6', '09:00', '12:00', 15),
+	(6, 1, 'x12345x', '09:00', '12:00', 25),
+	(7, 1, 'x1xx45x', '09:00', '12:00', 25),
+	(8, 1, 'x1x3x56', '09:00', '12:00', 10),
+	(9, 1, 'x12xxx6', '09:00', '12:00', 14),
+	(10, 1, 'x1x3x5x', '09:00', '12:00', 10);
+	
+	alter table lrc_sch  RENAME   doctoravailableslot TO doctortreattime;
+
+	-- Add the new column to the table
+ALTER TABLE lrc_sch ADD COLUMN doctoravailabelslot INT;
+
+-- Update the values in the new column based on the formula
+UPDATE lrc_sch
+SET doctoravailabelslot = (EXTRACT(EPOCH FROM (doctoravailableto - doctoravailablefrom)) / (doctortreattime * 60))::INT;
+
+	
+CREATE OR REPLACE FUNCTION get_nofslots(
+    docid INT,sindex int,
+    input_date DATE
+)
+RETURNS INT
+LANGUAGE plpgsql
+AS $$
+declare
+    schedule_cursor CURSOR (docid INT,sindex int, input_date DATE) FOR
+        SELECT doctorschedule,doctoravailabelslot, doctorslotindex
+        FROM lrc_sch
+        WHERE doctorid = docid and  doctorslotindex=sindex; 
+	schstring varchar(20);
+	sind int;
+	slotavai int;
+	dayt int:=EXTRACT(dow FROM input_date);
+	contains_number boolean;
+begin
+ IF FOUND THEN
+        CLOSE schedule_cursor;
+    END IF;
+open schedule_cursor(docid ,sindex, input_date);
+fetch schedule_cursor into schstring,slotavai,sind ;
+	contains_number:=schstring like '%'|| dayt || '%';
+	CLOSE schedule_cursor;
+	if contains_number then 
+		return slotavai;
+	else 
+	
+		return 0;
+	 
+	end if;
+
+	
+END;
+$$;
+			
+		call	 InsertAppointmentsFromDoctorsAndPatients(1) 
+	
+			
+			
+			
+CREATE OR REPLACE PROCEDURE InsertAppointmentsFromDoctorsAndPatients(docid int) AS $$
+DECLARE
+    cur_doctors CURSOR(docid int) FOR SELECT doctorslotindex,doctorschedule,doctoravailablefrom,doctoravailableto,doctoravailabelslot,doctortreattime FROM lrc_sch where doctorid=docid; 
+    dindex int;
+    docsche varchar(20);
+	docfrom time;
+	docto time;
+	docslots int;
+	docrange int;
+	slotdate Date:=current_date+1;
+	nofoslot int;
+	counter int;
+	counter2 int;
+	occured int;
+	tot int;
+	doc_tr_time int;
+BEGIN
+	    SELECT dayrange INTO docrange FROM doctrange WHERE doctorid = docid;
+		call prevDateDelete(slotdate);
+	for counter in 1..docrange loop
+   OPEN cur_doctors(docid);
+		raise notice '%',counter;
+    LOOP
+        FETCH cur_doctors INTO dindex,docsche,docfrom,docto,docslots,doc_tr_time;
+		EXIT WHEN NOT FOUND;
+		nofoslot:=get_nofslots(docid, dindex, slotdate);
+		tot:=tot+nofoslot;
+		select occured(docid,slotdate) into occured;
+		if nofoslot>0 then 
+			for counter2 in 1..nofoslot-occured loop
+			docto := docfrom + (doc_tr_time || ' minutes')::interval;
+			
+			insert into lrc_slot (slotdoctorid,slotdate,slotfrom,slotto,slotstatus)values(docid,slotdate,docfrom,docto,'Available');
+			docfrom:=docto;
+			end loop;
+			end if;
+		
+    END LOOP;
+    CLOSE cur_doctors;
+	if tot=0 then counter:=counter-1; end if;
+	slotdate:=slotdate+1;
+	raise notice 'slot date:%',slotdate;
+end loop;
+END;
+$$ LANGUAGE plpgsql;
+
+
+
+
+CREATE OR REPLACE PROCEDURE AllDoctors() AS $$
+DECLARE
+	n int;
+    cur_AllDoctors CURSOR FOR SELECT doctorid  FROM lrc_doctor ; 
+    
+BEGIN
+	    
+   OPEN cur_AllDoctors;
+	
+    LOOP
+	
+        FETCH cur_AllDoctors INTO n;
+		EXIT WHEN NOT FOUND;
+	
+		call InsertAppointmentsFromDoctorsAndPatients(n);
+		
+		
+end loop;
+close cur_AllDoctors;
+END;
+$$ LANGUAGE plpgsql;
+
+	call AllDoctors();
+	
+	
+	
+CREATE OR REPLACE FUNCTION occured(
+    docid INT,
+    input_date DATE
+)
+RETURNS INT
+LANGUAGE plpgsql
+AS $$
+declare
+occured int;
+begin
+select count(*) from lrc_slot where slotdoctorid=docid AND slotdate=input_date into occured;
+
+
+return occured;
+END;
+$$;
+
+create table lrc_slot(slotid serial primary key,slotdoctorid int,
+					   slotdate date,slotfrom time,slotto time
+					   ,slotstatus varchar(25));
+
+
+CREATE TABLE lrc_patients (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) ,
+    age INT,
+    gender VARCHAR(10),
+    phone VARCHAR(15),
+    docid INT ,
+    from_time TIME ,
+    to_time TIME,
+    dates DATE 
+);
+select * from lrc_patients;
+
+CREATE OR REPLACE FUNCTION update_slot_column()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Your logic here to update the lrc_slot table based on the lrc_patients insertion
+    -- For example, you can use an UPDATE statement with the provided parameters
+    UPDATE lrc_slot
+    SET slotstatus = 'booked'
+    WHERE  slotdate = NEW.dates
+        AND slotfrom = NEW.from_time
+        AND slotto = NEW.to_time
+        AND slotdoctorid = NEW.docid;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER patient_trigger
+AFTER INSERT
+ON lrc_patients
+FOR EACH ROW
+EXECUTE FUNCTION update_slot_column();
+
+INSERT INTO lrc_patients (name, age, gender, phone, docid, from_time, to_time, dates)
+VALUES ('John Doe', 35, 'Male', '1234567890', 1, '09:15:00', '09:30:00', '2023-09-06');
+
+-- Create the trigger
+CREATE OR REPLACE FUNCTION insert_into_lrc_slot()
+RETURNS TRIGGER AS $$
+BEGIN
+    call	 InsertAppointmentsFromDoctorsAndPatients(NEW.doctorid);  
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger that fires AFTER INSERT on the doctorschedule_bhaskar table
+CREATE TRIGGER insert_lrc_slot_trigger
+AFTER INSERT
+ON lrc_sch
+FOR EACH ROW
+EXECUTE FUNCTION insert_into_lrc_slot();
+
+INSERT INTO lrc_sch VALUES
+   (7, 1, 'x1xx45x', '09:00', '12:00', 10,18);
+
+delete from lrc_sch where doctorid=7;
+
+
+
+
+
+
+-- Create the trigger
+CREATE OR REPLACE FUNCTION update_lrc_slot()
+RETURNS TRIGGER AS $$
+BEGIN
+	delete from lrc_slot where slotdoctorid=NEW.doctorid;
+
+     call	 InsertAppointmentsFromDoctorsAndPatients(NEW.doctorid);  
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger that fires AFTER UPDATE on the doctorschedule_bhaskar table
+CREATE TRIGGER update_lrc_slot_trigger
+AFTER UPDATE
+ON lrc_sch
+FOR EACH ROW
+EXECUTE FUNCTION update_lrc_slot();
+
+
+select * from lrc_sch;
+select * from lrc_slot
+delete from lrc_slot
+
+
+UPDATE lrc_sch
+SET doctorschedule = 'x123456'
+WHERE doctorid = 7 ;
+
+create or replace procedure prevDateDelete(slotdate1 Date)
+as $$
+begin 
+raise notice 'this is to delete previous dates';
+delete from lrc_slot where slotdate < slotdate1 ;
+end;
+$$ language plpgsql;
+
+call prevDateDelete(current_Date)
+-- Create a stored procedure that deletes records
+CREATE OR REPLACE FUNCTION delete_records_by_condition(condition_column INT)
+RETURNS VOID AS $$
+BEGIN
+    DELETE FROM your_table_name
+    WHERE your_column = condition_column;
+END;
+$$ LANGUAGE plpgsql;
